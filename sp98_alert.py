@@ -57,6 +57,12 @@ def http(url, data=None, headers=None, timeout=30, retries=3):
             req = urllib.request.Request(url, data=data, headers=h)
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 return json.loads(r.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", "replace")[:300]
+            if 400 <= e.code < 500 and e.code != 429:  # erreur définitive : inutile de réessayer
+                raise RuntimeError(f"HTTP {e.code} sur {url.split('?')[0]} : {body}")
+            last = f"HTTP {e.code} {body}"
+            time.sleep(2 * (i + 1))
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as e:
             last = e
             time.sleep(2 * (i + 1))
@@ -249,9 +255,13 @@ def build_notification(kind, rec, prev, cur, dist_km):
 
 
 def notify(title, message, priority=3, tags=None, click=None):
-    topic = os.environ.get("NTFY_TOPIC")
+    topic = (os.environ.get("NTFY_TOPIC") or "").strip()
+    if "://" in topic:  # URL collée par erreur : on garde le nom du topic
+        topic = topic.rstrip("/").split("/")[-1]
     if not topic:
         raise RuntimeError("NTFY_TOPIC manquant")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", topic):
+        raise RuntimeError("NTFY_TOPIC invalide : uniquement lettres, chiffres, '-' et '_' (64 max)")
     server = os.environ.get("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
     payload = {"topic": topic, "title": title, "message": message, "priority": priority, "tags": tags or []}
     if click:
