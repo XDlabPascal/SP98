@@ -24,6 +24,7 @@ jobs:
         env:
           ADDRESS: ${{ secrets.ADDRESS }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
           RADIUS_KM: ${{ vars.RADIUS_KM || '15' }}
           STATION_IDS: ${{ vars.STATION_IDS || '' }}
 
