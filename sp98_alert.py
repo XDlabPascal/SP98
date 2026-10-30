@@ -261,7 +261,11 @@ def notify(title, message, priority=3, tags=None, click=None):
     if not topic:
         raise RuntimeError("NTFY_TOPIC manquant")
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", topic):
-        raise RuntimeError("NTFY_TOPIC invalide : uniquement lettres, chiffres, '-' et '_' (64 max)")
+        bad = [f"position {i + 1} : U+{ord(c):04X}" for i, c in enumerate(topic) if not re.match(r"[A-Za-z0-9_-]", c)]
+        raise RuntimeError(
+            f"NTFY_TOPIC invalide (longueur {len(topic)}, 64 max ; lettres sans accent, chiffres, '-' et '_' uniquement). "
+            f"Caractères refusés : {'; '.join(bad[:5]) or 'aucun (trop long ?)'}"
+        )
     server = os.environ.get("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
     payload = {"topic": topic, "title": title, "message": message, "priority": priority, "tags": tags or []}
     if click:
