@@ -25,7 +25,10 @@ Variables d'environnement :
   STATE_FILE    fichier d'état                      (défaut state.json à côté du script)
 
 Options : --list (affiche les stations du rayon), --dry-run (n'envoie rien,
-n'écrit rien), --test-notify (envoie une notification de test).
+n'écrit rien), --test-notify (envoie une notification de test),
+--refresh-stations (détecte les TotalEnergies via OpenStreetMap et met à jour
+total_cache.json ; lancé une fois par semaine par un workflow dédié — les
+passages de 15 minutes lisent ce fichier et ne contactent jamais Overpass).
 """
 import argparse
 import json
@@ -49,7 +52,6 @@ OVERPASS = [
     "https://overpass.private.coffee/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
 ]
-TOTAL_CACHE_DAYS = 7
 MATCH_MAX_M = 100  # rattachement OSM -> flux par proximité si pas de ref:FR:prix-carburants
 
 
@@ -211,31 +213,61 @@ def total_ids_from_osm(lat, lon, radius_km, flux_by_id, brand_regex):
     return sorted(ids)
 
 
-def resolve_total_ids(state, lat, lon, radius_km, flux_by_id, brand_regex):
-    """`state` est le dictionnaire du cache des stations (fichier total_cache.json, séparé de state.json)."""
+def cache_key(lat, lon, radius_km, brand_regex):
+    return f"{lat:.4f},{lon:.4f},{radius_km},{brand_regex}"
+
+
+def read_total_ids(cache, key):
+    """Liste des stations TotalEnergies : STATION_IDS, sinon total_cache.json.
+    Ne contacte jamais Overpass (c'est le rôle de --refresh-stations, une fois par semaine)."""
     manual = [x.strip() for x in os.environ.get("STATION_IDS", "").split(",") if x.strip()]
     if manual:
         return manual
-    cache = state.get("total", {})
-    fresh = False
-    if cache.get("ts"):
-        age = (datetime.now(timezone.utc) - datetime.fromisoformat(cache["ts"])).days
-        fresh = age < TOTAL_CACHE_DAYS and cache.get("key") == f"{lat:.4f},{lon:.4f},{radius_km},{brand_regex}"
-    if fresh:
-        return cache["ids"]
-    try:
-        ids = total_ids_from_osm(lat, lon, radius_km, flux_by_id, brand_regex)
-    except RuntimeError as e:
-        if cache.get("ids"):
-            print(f"[warn] {e} — utilisation de la liste en cache", file=sys.stderr)
-            return cache["ids"]
-        raise
-    state["total"] = {
-        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "key": f"{lat:.4f},{lon:.4f},{radius_km},{brand_regex}",
-        "ids": ids,
-    }
-    return ids
+    total = cache.get("total", {})
+    if not total.get("ids"):
+        raise RuntimeError(
+            "Liste des stations TotalEnergies absente (total_cache.json). Lance le workflow "
+            "« Actualiser les stations TotalEnergies » ou renseigne la variable STATION_IDS."
+        )
+    if total.get("key") != key:
+        print("[warn] adresse ou rayon différents de la dernière actualisation : relance le workflow "
+              "« Actualiser les stations TotalEnergies ».", file=sys.stderr)
+    return total["ids"]
+
+
+def refresh_total_ids(cache, key, lat, lon, radius_km, flux_by_id, brand_regex):
+    """Interroge Overpass et met à jour le cache en mémoire. Retourne (anciens_ids, nouveaux_ids)."""
+    old = list(cache.get("total", {}).get("ids", []))
+    new = total_ids_from_osm(lat, lon, radius_km, flux_by_id, brand_regex)
+    if not new and old:
+        raise RuntimeError("Overpass n'a renvoyé aucune station TotalEnergies : liste précédente conservée.")
+    cache["total"] = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "key": key, "ids": new}
+    return old, new
+
+
+def refresh_stations(args, cache, cache_path, key, lat, lon, radius, flux, brand):
+    """Mode hebdomadaire : met à jour total_cache.json et prévient si la liste change."""
+    if os.environ.get("STATION_IDS", "").strip():
+        print("STATION_IDS est défini : la détection automatique est désactivée, rien à actualiser.")
+        return 0
+    prev_key = cache.get("total", {}).get("key")
+    old, new = refresh_total_ids(cache, key, lat, lon, radius, flux, brand)
+    added, removed = sorted(set(new) - set(old)), sorted(set(old) - set(new))
+
+    def label(i):
+        r = flux.get(i)
+        return f"{r.get('adresse', '?')}, {r.get('ville', '')}" if r else f"station {i} (absente du flux)"
+
+    print(f"{len(new)} stations TotalEnergies détectées ({len(added)} nouvelle(s), {len(removed)} retirée(s)).")
+    if old and (added or removed):
+        lines = [f"+ {label(i)}" for i in added] + [f"– {label(i)}" for i in removed]
+        title = "Stations TotalEnergies : liste mise à jour"
+        print(title + "\n" + "\n".join(lines))
+        if not args.dry_run:
+            notify(title, "\n".join(lines), 3, ["fuelpump", "arrows_counterclockwise"])
+    if not args.dry_run and (old != new or prev_key != key):
+        save_state(cache_path, cache)
+    return 0
 
 
 # --------------------------------------------------------------------------- logique d'alerte
@@ -332,6 +364,8 @@ def main():
     ap.add_argument("--list", action="store_true", help="liste les stations du rayon et leur statut SP98")
     ap.add_argument("--dry-run", action="store_true", help="n'envoie rien et n'écrit pas l'état")
     ap.add_argument("--test-notify", action="store_true", help="envoie une notification de test")
+    ap.add_argument("--refresh-stations", action="store_true",
+                    help="détecte les stations TotalEnergies via OpenStreetMap et met à jour total_cache.json (hebdomadaire)")
     args = ap.parse_args()
 
     if args.test_notify:
@@ -356,14 +390,13 @@ def main():
     state = load_state(state_path)
     cache_path = os.environ.get("TOTAL_CACHE_FILE") or str(Path(state_path).with_name("total_cache.json"))
     cache = load_state(cache_path)
-    if "total" not in cache and "total" in state:  # ancien emplacement du cache
-        cache["total"] = state["total"]
-    total_before = json.dumps(cache.get("total"), sort_keys=True)
-    total_ids = resolve_total_ids(cache, lat, lon, radius, flux, brand)
-    if not args.dry_run and json.dumps(cache.get("total"), sort_keys=True) != total_before:
-        save_state(cache_path, cache)
+    key = cache_key(lat, lon, radius, brand)
+
+    if args.refresh_stations:
+        return refresh_stations(args, cache, cache_path, key, lat, lon, radius, flux, brand)
+
     state.pop("total", None)
-    total_ids = [i for i in total_ids if i in flux]
+    total_ids = [i for i in read_total_ids(cache, key) if i in flux]
     keep_motorway = os.environ.get("KEEP_MOTORWAY", "").strip().lower() in ("1", "true", "oui", "yes")
     if not keep_motorway:
         total_ids = [i for i in total_ids if not is_motorway(flux[i])]
