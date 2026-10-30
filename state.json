@@ -1,0 +1,48 @@
+{
+  "stations": {
+    "72000010": {
+      "available": false,
+      "price": null
+    },
+    "72000019": {
+      "available": false,
+      "price": null
+    },
+    "72000020": {
+      "available": true,
+      "price": 1.99
+    },
+    "72000021": {
+      "available": false,
+      "price": null
+    },
+    "72100004": {
+      "available": true,
+      "price": 1.99
+    },
+    "72100012": {
+      "available": false,
+      "price": null
+    },
+    "72100013": {
+      "available": false,
+      "price": null
+    },
+    "72100014": {
+      "available": false,
+      "price": null
+    },
+    "72470004": {
+      "available": true,
+      "price": 1.99
+    },
+    "72550002": {
+      "available": true,
+      "price": 1.99
+    },
+    "72650002": {
+      "available": true,
+      "price": 1.99
+    }
+  }
+}
