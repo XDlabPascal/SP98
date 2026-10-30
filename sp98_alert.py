@@ -18,6 +18,8 @@ Variables d'environnement :
                 Si renseigné, la détection automatique TotalEnergies est ignorée.
   BRAND_REGEX   marque recherchée dans OSM          (défaut "total")
   PRICE_DELTA   variation de prix minimale en €/L   (défaut 0.001)
+  ALERT_EMAIL   adresse mail qui reçoit aussi chaque alerte (relais par ntfy, optionnel)
+  KEEP_MOTORWAY mettre 1 pour inclure aussi les stations d'autoroute (exclues par défaut)
   NTFY_SERVER   serveur ntfy                        (défaut https://ntfy.sh)
   NTFY_TOKEN    jeton d'accès ntfy (optionnel, topics protégés)
   STATE_FILE    fichier d'état                      (défaut state.json à côté du script)
@@ -122,6 +124,16 @@ def names(v):
     if isinstance(v, str):
         v = re.split(r"[;,|]", v)
     return {str(x).strip().upper() for x in v if str(x).strip()}
+
+
+MOTORWAY_RX = re.compile(r"^\s*A\s?\d{1,3}\b|\bAUTOROUTE\b|\bAIRE\s+(DE|DU|DES|D')\b|\bAIRE\s+SARTHE\b", re.I)
+
+
+def is_motorway(rec):
+    """Station d'autoroute : champ officiel 'pop' = 'A', sinon adresse du type 'A11 - AIRE ...'."""
+    if str(rec.get("pop", "")).strip().upper() == "A":
+        return True
+    return bool(MOTORWAY_RX.search(str(rec.get("adresse", ""))))
 
 
 def sp98_info(rec):
@@ -273,6 +285,16 @@ def notify(title, message, priority=3, tags=None, click=None):
     headers = {"Content-Type": "application/json"}
     if os.environ.get("NTFY_TOKEN"):
         headers["Authorization"] = "Bearer " + os.environ["NTFY_TOKEN"]
+
+    email = (os.environ.get("ALERT_EMAIL") or "").strip()
+    if email:
+        if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+            raise RuntimeError("ALERT_EMAIL invalide (format attendu : nom@domaine.fr)")
+        try:  # ntfy relaie aussi la notification par mail (quota ntfy.sh : ~16 mails/jour)
+            http(server, data=json.dumps({**payload, "email": email}).encode("utf-8"), headers=headers)
+            return
+        except RuntimeError as e:
+            print(f"[warn] envoi avec mail refusé ({e}) — nouvel essai sans mail", file=sys.stderr)
     http(server, data=json.dumps(payload).encode("utf-8"), headers=headers)
 
 
@@ -318,6 +340,9 @@ def main():
     state = load_state(state_path)
     total_ids = resolve_total_ids(state, lat, lon, radius, flux, brand)
     total_ids = [i for i in total_ids if i in flux]
+    keep_motorway = os.environ.get("KEEP_MOTORWAY", "").strip().lower() in ("1", "true", "oui", "yes")
+    if not keep_motorway:
+        total_ids = [i for i in total_ids if not is_motorway(flux[i])]
 
     def dist(rec):
         c = coords(rec)
@@ -326,7 +351,7 @@ def main():
     if args.list:
         for sid, rec in sorted(flux.items(), key=lambda kv: dist(kv[1])):
             info = sp98_info(rec)
-            mark = "TOTAL" if sid in total_ids else "     "
+            mark = "TOTAL" if sid in total_ids else ("AUTO " if is_motorway(rec) else "     ")
             print(f"{mark} {sid:>9} {dist(rec):5.1f} km  {rec.get('adresse','?')[:38]:38} {rec.get('ville','')[:18]:18} "
                   f"SP98 {fmt_price(info['price']):>11}  {info['status']}")
         return 0
