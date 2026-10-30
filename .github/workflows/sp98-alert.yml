@@ -30,10 +30,10 @@ jobs:
 
       - name: Sauvegarder l'état
         run: |
-          if [ -n "$(git status --porcelain state.json)" ]; then
+          if [ -n "$(git status --porcelain)" ]; then
             git config user.name "sp98-bot"
             git config user.email "sp98-bot@users.noreply.github.com"
-            git add state.json
+            git add -A
             git commit -m "maj état SP98"
             git push
           fi
