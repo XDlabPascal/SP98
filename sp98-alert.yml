@@ -1,0 +1,38 @@
+name: Alerte SP98 TotalEnergies
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"   # toutes les 15 min (GitHub peut retarder de quelques minutes)
+  workflow_dispatch:          # lancement manuel depuis l'onglet Actions
+
+permissions:
+  contents: write             # nécessaire pour sauvegarder state.json
+
+concurrency:
+  group: sp98-alert
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Vérifier le SP98 et notifier
+        run: python3 sp98_alert.py
+        env:
+          ADDRESS: ${{ secrets.ADDRESS }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          RADIUS_KM: ${{ vars.RADIUS_KM || '15' }}
+          STATION_IDS: ${{ vars.STATION_IDS || '' }}
+
+      - name: Sauvegarder l'état
+        run: |
+          if [ -n "$(git status --porcelain state.json)" ]; then
+            git config user.name "sp98-bot"
+            git config user.email "sp98-bot@users.noreply.github.com"
+            git add state.json
+            git commit -m "maj état SP98"
+            git push
+          fi
