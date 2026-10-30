@@ -9,8 +9,8 @@
       "price": null
     },
     "72000020": {
-      "available": true,
-      "price": 1.99
+      "available": false,
+      "price": null
     },
     "72000021": {
       "available": false,
