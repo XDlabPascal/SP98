@@ -44,7 +44,11 @@ UA = "sp98-alert/1.0 (+usage personnel)"
 DATASET = "prix-des-carburants-en-france-flux-instantane-v2"
 API_FLUX = f"https://data.economie.gouv.fr/api/explore/v2.1/catalog/datasets/{DATASET}/records"
 API_ADRESSE = "https://api-adresse.data.gouv.fr/search/"
-OVERPASS = ["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"]
+OVERPASS = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+]
 TOTAL_CACHE_DAYS = 7
 MATCH_MAX_M = 100  # rattachement OSM -> flux par proximité si pas de ref:FR:prix-carburants
 
@@ -161,15 +165,26 @@ def sp98_info(rec):
 # --------------------------------------------------------------------------- détection TotalEnergies
 def total_ids_from_osm(lat, lon, radius_km, flux_by_id, brand_regex):
     rx = re.compile(brand_regex, re.I)
-    q = f'[out:json][timeout:40];nwr["amenity"="fuel"](around:{int((radius_km + 1) * 1000)},{lat},{lon});out center tags;'
+    around = f"(around:{int((radius_km + 1) * 1000)},{lat},{lon})"
+    b = brand_regex.replace("\\", "\\\\").replace('"', "")
+    # filtre côté serveur (requête légère) : seules les stations dont marque/opérateur/nom correspondent
+    q = (
+        "[out:json][timeout:25];("
+        + "".join(f'nwr["amenity"="fuel"]["{k}"~"{b}",i]{around};' for k in ("brand", "operator", "name"))
+        + ");out center tags;"
+    )
     body = urllib.parse.urlencode({"data": q}).encode()
     data, err = None, None
-    for ep in OVERPASS:
-        try:
-            data = http(ep, data=body, timeout=60, retries=2)
+    for _ in range(2):  # deux tours sur l'ensemble des serveurs
+        for ep in OVERPASS:
+            try:
+                data = http(ep, data=body, timeout=40, retries=1)
+                break
+            except RuntimeError as e:
+                err = e
+        if data is not None:
             break
-        except RuntimeError as e:
-            err = e
+        time.sleep(5)
     if data is None:
         raise RuntimeError(f"Overpass indisponible : {err}")
 
@@ -197,6 +212,7 @@ def total_ids_from_osm(lat, lon, radius_km, flux_by_id, brand_regex):
 
 
 def resolve_total_ids(state, lat, lon, radius_km, flux_by_id, brand_regex):
+    """`state` est le dictionnaire du cache des stations (fichier total_cache.json, séparé de state.json)."""
     manual = [x.strip() for x in os.environ.get("STATION_IDS", "").split(",") if x.strip()]
     if manual:
         return manual
@@ -338,7 +354,15 @@ def main():
     print(f"Adresse : {label} ({lat:.5f}, {lon:.5f}) — {len(flux)} stations dans {radius:g} km")
 
     state = load_state(state_path)
-    total_ids = resolve_total_ids(state, lat, lon, radius, flux, brand)
+    cache_path = os.environ.get("TOTAL_CACHE_FILE") or str(Path(state_path).with_name("total_cache.json"))
+    cache = load_state(cache_path)
+    if "total" not in cache and "total" in state:  # ancien emplacement du cache
+        cache["total"] = state["total"]
+    total_before = json.dumps(cache.get("total"), sort_keys=True)
+    total_ids = resolve_total_ids(cache, lat, lon, radius, flux, brand)
+    if not args.dry_run and json.dumps(cache.get("total"), sort_keys=True) != total_before:
+        save_state(cache_path, cache)
+    state.pop("total", None)
     total_ids = [i for i in total_ids if i in flux]
     keep_motorway = os.environ.get("KEEP_MOTORWAY", "").strip().lower() in ("1", "true", "oui", "yes")
     if not keep_motorway:
