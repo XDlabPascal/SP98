@@ -1,0 +1,45 @@
+name: Actualiser les stations TotalEnergies
+
+on:
+  schedule:
+    - cron: "17 5 * * 1"      # chaque lundi vers 6h-7h (heure de Paris)
+  workflow_dispatch:           # lancement manuel possible depuis l'onglet Actions
+
+permissions:
+  contents: write              # nécessaire pour sauvegarder total_cache.json
+
+concurrency:
+  group: sp98-alert            # même groupe que la surveillance : jamais deux commits en parallèle
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Détecter les stations TotalEnergies (jusqu'à 4 essais)
+        run: |
+          for i in 1 2 3 4; do
+            python3 sp98_alert.py --refresh-stations && exit 0
+            echo "Essai $i échoué (Overpass souvent surchargé), nouvel essai dans 3 minutes"
+            sleep 180
+          done
+          exit 1
+        env:
+          ADDRESS: ${{ secrets.ADDRESS }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+          RADIUS_KM: ${{ vars.RADIUS_KM || '15' }}
+          STATION_IDS: ${{ vars.STATION_IDS || '' }}
+
+      - name: Sauvegarder la liste
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            git config user.name "sp98-bot"
+            git config user.email "sp98-bot@users.noreply.github.com"
+            git add -A
+            git commit -m "maj liste stations TotalEnergies"
+            git push
+          fi
