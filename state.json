@@ -5,8 +5,8 @@
       "price": null
     },
     "72000019": {
-      "available": false,
-      "price": null
+      "available": true,
+      "price": 1.99
     },
     "72000020": {
       "available": false,
@@ -21,8 +21,8 @@
       "price": 1.99
     },
     "72100012": {
-      "available": true,
-      "price": 1.99
+      "available": false,
+      "price": null
     },
     "72100013": {
       "available": false,
@@ -33,8 +33,8 @@
       "price": null
     },
     "72470004": {
-      "available": false,
-      "price": null
+      "available": true,
+      "price": 1.99
     },
     "72550002": {
       "available": true,
