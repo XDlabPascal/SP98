@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: "*/15 * * * *"   # toutes les 15 min (GitHub peut retarder de quelques minutes)
   workflow_dispatch:          # lancement manuel depuis l'onglet Actions
+    inputs:
+      test_mail:
+        description: "Envoyer seulement un mail de test (sans surveiller)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write             # nécessaire pour sauvegarder state.json
@@ -19,16 +24,30 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Mail de test
+        if: ${{ inputs.test_mail }}
+        run: python3 sp98_alert.py --test-mail
+        env:
+          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SMTP_HOST: ${{ vars.SMTP_HOST || '' }}
+
       - name: Vérifier le SP98 et notifier
+        if: ${{ !inputs.test_mail }}
         run: python3 sp98_alert.py
         env:
           ADDRESS: ${{ secrets.ADDRESS }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SMTP_HOST: ${{ vars.SMTP_HOST || '' }}
           RADIUS_KM: ${{ vars.RADIUS_KM || '15' }}
           STATION_IDS: ${{ vars.STATION_IDS || '' }}
 
       - name: Sauvegarder l'état
+        if: ${{ !inputs.test_mail }}
         run: |
           if [ -n "$(git status --porcelain)" ]; then
             git config user.name "sp98-bot"

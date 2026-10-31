@@ -31,6 +31,9 @@ jobs:
           ADDRESS: ${{ secrets.ADDRESS }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SMTP_HOST: ${{ vars.SMTP_HOST || '' }}
           RADIUS_KM: ${{ vars.RADIUS_KM || '15' }}
           STATION_IDS: ${{ vars.STATION_IDS || '' }}
 
