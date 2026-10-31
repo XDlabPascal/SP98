@@ -18,7 +18,12 @@ Variables d'environnement :
                 Si renseigné, la détection automatique TotalEnergies est ignorée.
   BRAND_REGEX   marque recherchée dans OSM          (défaut "total")
   PRICE_DELTA   variation de prix minimale en €/L   (défaut 0.001)
-  ALERT_EMAIL   adresse mail qui reçoit aussi chaque alerte (relais par ntfy, optionnel)
+  ALERT_EMAIL   adresse mail qui reçoit aussi chaque alerte (optionnel)
+  SMTP_USER     identifiant du compte qui envoie le mail (adresse complète)
+  SMTP_PASSWORD mot de passe d'application de ce compte (pas le mot de passe principal)
+  SMTP_HOST     serveur SMTP (défaut smtp.gmail.com) ; SMTP_PORT (défaut 587, 465 = SSL)
+  SMTP_FROM     adresse d'expéditeur (défaut : SMTP_USER)
+  --test-mail   envoie un mail de test
   KEEP_MOTORWAY mettre 1 pour inclure aussi les stations d'autoroute (exclues par défaut)
   NTFY_SERVER   serveur ntfy                        (défaut https://ntfy.sh)
   NTFY_TOKEN    jeton d'accès ntfy (optionnel, topics protégés)
@@ -35,12 +40,14 @@ import json
 import math
 import os
 import re
+import smtplib
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
+from email.message import EmailMessage
 from pathlib import Path
 
 UA = "sp98-alert/1.0 (+usage personnel)"
@@ -334,16 +341,49 @@ def notify(title, message, priority=3, tags=None, click=None):
     if os.environ.get("NTFY_TOKEN"):
         headers["Authorization"] = "Bearer " + os.environ["NTFY_TOKEN"]
 
-    email = (os.environ.get("ALERT_EMAIL") or "").strip()
-    if email:
-        if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
-            raise RuntimeError("ALERT_EMAIL invalide (format attendu : nom@domaine.fr)")
-        try:  # ntfy relaie aussi la notification par mail (quota ntfy.sh : ~16 mails/jour)
-            http(server, data=json.dumps({**payload, "email": email}).encode("utf-8"), headers=headers)
-            return
-        except RuntimeError as e:
-            print(f"[warn] envoi avec mail refusé ({e}) — nouvel essai sans mail", file=sys.stderr)
-    http(server, data=json.dumps(payload).encode("utf-8"), headers=headers)
+    http(server, data=json.dumps(payload).encode("utf-8"), headers=headers)  # notification push
+    send_mail(title, message, click)  # puis mail (jamais bloquant)
+
+
+def send_mail(title, message, link=None):
+    """Mail direct par SMTP (sans passer par ntfy, qui refuse les mails anonymes).
+    Actif si ALERT_EMAIL, SMTP_USER et SMTP_PASSWORD sont définis. Un échec ne bloque pas
+    la notification push : il est signalé par un avertissement visible dans l'onglet Actions."""
+    to = (os.environ.get("ALERT_EMAIL") or "").strip()
+    user = (os.environ.get("SMTP_USER") or "").strip()
+    password = os.environ.get("SMTP_PASSWORD") or ""
+    if not to:
+        print("ALERT_EMAIL non défini : aucun mail à envoyer.", file=sys.stderr)
+        return False
+    if not (user and password):
+        print("::warning::ALERT_EMAIL défini mais SMTP_USER / SMTP_PASSWORD manquants : aucun mail envoyé.", file=sys.stderr)
+        return False
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", to):
+        print("::warning::ALERT_EMAIL invalide (format attendu : nom@domaine.fr) : aucun mail envoyé.", file=sys.stderr)
+        return False
+    host = (os.environ.get("SMTP_HOST") or "smtp.gmail.com").strip()
+    port = int(os.environ.get("SMTP_PORT") or 587)
+    sender = (os.environ.get("SMTP_FROM") or user).strip()
+    msg = EmailMessage()
+    msg["Subject"] = title
+    msg["From"] = f"Alerte SP98 <{sender}>"
+    msg["To"] = to
+    msg.set_content(message + (f"\n\nItinéraire : {link}" if link else ""))
+    try:
+        if port == 465:
+            with smtplib.SMTP_SSL(host, port, timeout=30) as s:
+                s.login(user, password)
+                s.send_message(msg)
+        else:
+            with smtplib.SMTP(host, port, timeout=30) as s:
+                s.starttls()
+                s.login(user, password)
+                s.send_message(msg)
+        print(f"Mail envoyé à {to}.")
+        return True
+    except (OSError, smtplib.SMTPException) as e:
+        print(f"::warning::Mail non envoyé ({type(e).__name__} : {e})", file=sys.stderr)
+        return False
 
 
 # --------------------------------------------------------------------------- état
@@ -364,9 +404,13 @@ def main():
     ap.add_argument("--list", action="store_true", help="liste les stations du rayon et leur statut SP98")
     ap.add_argument("--dry-run", action="store_true", help="n'envoie rien et n'écrit pas l'état")
     ap.add_argument("--test-notify", action="store_true", help="envoie une notification de test")
+    ap.add_argument("--test-mail", action="store_true", help="envoie un mail de test (SMTP)")
     ap.add_argument("--refresh-stations", action="store_true",
                     help="détecte les stations TotalEnergies via OpenStreetMap et met à jour total_cache.json (hebdomadaire)")
     args = ap.parse_args()
+
+    if args.test_mail:
+        return 0 if send_mail("Test alerte SP98", "Si tu lis ceci, l'envoi de mails fonctionne.") else 1
 
     if args.test_notify:
         notify("Test alerte SP98", "Si tu lis ceci, les notifications fonctionnent.", 3, ["fuelpump", "tada"])
