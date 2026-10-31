@@ -364,26 +364,45 @@ def send_mail(title, message, link=None):
     host = (os.environ.get("SMTP_HOST") or "smtp.gmail.com").strip()
     port = int(os.environ.get("SMTP_PORT") or 587)
     sender = (os.environ.get("SMTP_FROM") or user).strip()
+    # mot de passe d'application collé depuis Google : espaces (parfois insécables) à retirer
+    password = re.sub(r"\s+", "", password) if host.endswith("gmail.com") else password.strip()
     msg = EmailMessage()
     msg["Subject"] = title
     msg["From"] = f"Alerte SP98 <{sender}>"
     msg["To"] = to
     msg.set_content(message + (f"\n\nItinéraire : {link}" if link else ""))
+
+    last = None
+    for p in [port] + ([465] if port == 587 else []):  # 587 (STARTTLS), puis 465 (SSL) en secours
+        try:
+            _smtp_deliver(host, p, user, password, msg)
+            print(f"Mail envoyé à {to} (via {host}:{p}).")
+            return True
+        except RuntimeError as e:
+            last = e
+            print(f"[info] tentative mail échouée : {e}", file=sys.stderr)
+            if getattr(e, "stage", "") not in ("connexion", "STARTTLS"):
+                break  # identifiants refusés / envoi refusé : changer de port n'y changerait rien
+    print(f"::warning::Mail non envoyé — {last}", file=sys.stderr)
+    return False
+
+
+def _smtp_deliver(host, port, user, password, msg):
+    """Un envoi SMTP ; l'erreur indique l'étape qui échoue (jamais le mot de passe)."""
+    stage = "connexion"
     try:
-        if port == 465:
-            with smtplib.SMTP_SSL(host, port, timeout=30) as s:
-                s.login(user, password)
-                s.send_message(msg)
-        else:
-            with smtplib.SMTP(host, port, timeout=30) as s:
+        with (smtplib.SMTP_SSL if port == 465 else smtplib.SMTP)(host, port, timeout=30) as s:
+            if port != 465:
+                stage = "STARTTLS"
                 s.starttls()
-                s.login(user, password)
-                s.send_message(msg)
-        print(f"Mail envoyé à {to}.")
-        return True
-    except (OSError, smtplib.SMTPException) as e:
-        print(f"::warning::Mail non envoyé ({type(e).__name__} : {e})", file=sys.stderr)
-        return False
+            stage = "authentification"
+            s.login(user, password)
+            stage = "envoi"
+            s.send_message(msg)
+    except (OSError, smtplib.SMTPException, UnicodeError) as e:
+        err = RuntimeError(f"{host}:{port}, étape « {stage} » : {type(e).__name__} : {e}")
+        err.stage = stage
+        raise err from e
 
 
 # --------------------------------------------------------------------------- état
